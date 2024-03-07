@@ -49,6 +49,8 @@ class SignatureV4 implements SignatureInterface
     {
         return [
             'cache-control'         => true,
+            //'host'                  => true,
+            //'x-amz-content-sha256'  => true,
             'content-length'        => true,
             'expect'                => true,
             'max-forwards'          => true,
@@ -94,12 +96,12 @@ class SignatureV4 implements SignatureInterface
     public function signRequest(
         RequestInterface $request,
         CredentialsInterface $credentials,
-        $signingService = null
+        $signingService = null,
+        string $requestTime = ''
     ) {
-        $ldt = gmdate(self::ISO8601_BASIC);
-        $sdt = substr($ldt, 0, 8);
+        $sdt = substr($requestTime, 0, 8);
         $parsed = $this->parseRequest($request);
-        $parsed['headers']['X-Amz-Date'] = [$ldt];
+        $parsed['headers']['X-Amz-Date'] = [$requestTime];
 
         if ($token = $credentials->getSecurityToken()) {
             $parsed['headers']['X-Amz-Security-Token'] = [$token];
@@ -118,7 +120,7 @@ class SignatureV4 implements SignatureInterface
         }
 
         $context = $this->createContext($parsed, $payload);
-        $toSign = $this->createStringToSign($ldt, $cs, $context['creq']);
+        $toSign = $this->createStringToSign($requestTime, $cs, $context['creq']);
         $signingKey = $this->getSigningKey(
             $sdt,
             $this->region,
@@ -130,6 +132,51 @@ class SignatureV4 implements SignatureInterface
             "AWS4-HMAC-SHA256 "
             . "Credential={$credentials->getAccessKeyId()}/{$cs}, "
             . "SignedHeaders={$context['headers']}, Signature={$signature}"
+        ];
+
+        return $this->buildRequest($parsed);
+    }
+
+    public function singRequestWithSpecificDate(
+        RequestInterface $request,
+        CredentialsInterface $credentials,
+        $signingService = null,
+        string $requestTime = ''
+    ) {
+        $sdt = substr($requestTime, 0, 8);
+        $parsed = $this->parseRequest($request);
+        $parsed['headers']['X-Amz-Date'] = [$requestTime];
+
+        if ($token = $credentials->getSecurityToken()) {
+            $parsed['headers']['X-Amz-Security-Token'] = [$token];
+        }
+        $service = isset($signingService) ? $signingService : $this->service;
+
+        if ($this->useV4a) {
+            return $this->signWithV4a($credentials, $request, $service);
+        }
+
+        $cs = $sdt;
+
+        $payload = $this->getPayload($request);
+
+        if ($payload == self::UNSIGNED_PAYLOAD) {
+            $parsed['headers'][self::AMZ_CONTENT_SHA256_HEADER] = [$payload];
+        }
+
+        $context = $this->createContext($parsed, $payload);
+
+        $stringToSign = $this->createStringToSign($requestTime, $cs, $context['creq']);
+        $signingKey = $this->getAuthorizationSigningKey(
+            $sdt,
+            $credentials->getSecretKey()
+        );
+
+        $signature = hash_hmac('sha256', $stringToSign, $signingKey);
+        $parsed['headers']['Authorization'] = [
+            "DTA1-HMAC-SHA256 "
+            . "SignedHeaders={$context['headers']}, Credential={$credentials->getAccessKeyId()}/{$cs}, "
+            . "Signature={$signature}"
         ];
 
         return $this->buildRequest($parsed);
